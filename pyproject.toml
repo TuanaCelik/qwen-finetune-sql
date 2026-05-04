@@ -1,0 +1,29 @@
+[project]
+name = "gemma-4-finetune"
+version = "0.1.0"
+description = "Vertex AI fine-tune and deploy Gemma with SQL dataset"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "google-cloud-aiplatform>=1.38.0",
+    "python-dotenv>=1.0.0",
+    # HF lines below: keep in sync with train_sql_sft.HF_PIP_SPECS (Vertex pip bootstrap).
+    "transformers>=5.5.0",
+    "datasets>=2.16.0",
+    "peft>=0.11.0",
+    "trl>=0.9.0",
+    "accelerate>=1.1.0",
+    "huggingface_hub>=0.23.0",
+    "sentencepiece>=0.1.99",
+]
+
+# Gradio + smolagents for ``sql_compare_ui/`` (``uv sync --extra sql-compare-ui``).
+[project.optional-dependencies]
+sql-compare-ui = [
+    "gradio>=4.44.0",
+    "smolagents[transformers]>=1.14.0",
+    "torchvision>=0.18.0",
+]
+
+[tool.uv]
+# Application project: manage deps and venv with `uv sync`, no installable package.
+package = false

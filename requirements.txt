@@ -1,0 +1,17 @@
+# Pip fallback — preferred: `uv venv && uv sync` (see pyproject.toml).
+#
+# Local: submit Vertex jobs + deploy (scripts/finetune_deploy_gemma4.py)
+google-cloud-aiplatform>=1.38.0
+python-dotenv>=1.0.0
+
+# HF stack: mirror pyproject.toml / train_sql_sft.HF_PIP_SPECS (Vertex entrypoint also upgrades torch when VERTEX_UPGRADE_TORCH=1).
+transformers>=5.5.0
+datasets>=2.16.0
+peft>=0.11.0
+trl>=0.9.0
+accelerate>=1.1.0
+huggingface_hub>=0.23.0
+sentencepiece>=0.1.99
+
+# PyTorch: install separately for your OS/CUDA — https://pytorch.org/get-started/locally/
+# Example (CUDA 12): pip install torch --index-url https://download.pytorch.org/whl/cu124
