@@ -1,0 +1,7 @@
+gradio>=4.44.0
+huggingface_hub>=0.23.0
+python-dotenv>=1.0.0
+transformers>=5.5.0
+accelerate>=1.1.0
+sentencepiece>=0.1.99
+# PyTorch: install for your platform (CPU/CUDA), e.g. from pytorch.org — must match Transformers 5.x.
