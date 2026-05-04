@@ -1,0 +1,10 @@
+gradio>=4.44.0
+smolagents[transformers]>=1.14.0
+huggingface_hub>=0.23.0
+python-dotenv>=1.0.0
+transformers>=5.5.0
+accelerate>=1.1.0
+sentencepiece>=0.1.99
+# Gemma 4 AutoProcessor needs torchvision (Gemma4VideoProcessor). Pin to the same channel as torch (see pytorch.org).
+torchvision>=0.18.0
+# PyTorch: install separately for your platform (CPU/CUDA), e.g. from pytorch.org — must match Transformers 5.x.
