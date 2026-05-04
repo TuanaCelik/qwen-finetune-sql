@@ -1,0 +1,54 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Secrets and local overrides (any directory)
+.env
+.env.local
+.env.*.local
+
+# Local model caches and training smoke outputs (see scripts / README)
+.cache/
+.smoke-train-out/
+
+# Bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Packaging / installers
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.hypothesis/
+coverage.xml
+htmlcov/
+.coverage
+.coverage.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Experiment tracking and common HF/TRL output dirs
+wandb/
+runs/
+lightning_logs/
+mlruns/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
