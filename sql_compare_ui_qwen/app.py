@@ -78,7 +78,10 @@ import gradio as gr
 import torch
 from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
 
-from sql_compare_ui_qwen.prompting import build_prompt
+try:
+    from sql_compare_ui_qwen.prompting import build_prompt
+except ModuleNotFoundError:
+    from prompting import build_prompt
 
 _hf_model = None
 _hf_tokenizer = None
@@ -87,7 +90,7 @@ _ft_hf_model = None
 _ft_hf_tokenizer = None
 _ft_hf_model_id: str | None = None
 FINETUNED_HUB_MODEL_ID = "Tuana/qwen35-08b-text2sql"
-
+BASE_MODEL_ID = "Qwen/Qwen3.5-0.8B"
 
 def _env(name: str, default: str = "") -> str:
     v = os.environ.get(name)
@@ -95,14 +98,19 @@ def _env(name: str, default: str = "") -> str:
         return default
     return str(v).strip()
 
-
-def _hub_model_id() -> str:
-    return _env("QWEN_COMPARE_HUB_MODEL_ID") or "Qwen/Qwen3.5-0.8B"
-
-
 def _hf_token() -> str | None:
     t = (_env("QWEN_COMPARE_HF_TOKEN") or _env("HF_TOKEN", "")).strip()
     return t or None
+
+
+def _demo_data_dir() -> Path:
+    for path in (
+        ROOT / "data" / "spider_eval_synthetic",
+        REPO_ROOT / "data" / "spider_eval_synthetic",
+    ):
+        if (path / "department.csv").is_file():
+            return path
+    return ROOT / "data" / "spider_eval_synthetic"
 
 
 def _first_free_port(host: str, start: int, *, max_tries: int = 40) -> int:
@@ -209,7 +217,7 @@ def predict_hf(prompt: str) -> str:
             "to load the Hub model again."
         )
 
-    mid = _hub_model_id()
+    mid = BASE_MODEL_ID
     token = _hf_token()
     max_new = int(
         _env("QWEN_COMPARE_MAX_NEW_TOKENS", _env("MAX_NEW_TOKENS", "512")) or "512"
@@ -377,13 +385,74 @@ def predict_finetuned_hf(prompt: str) -> str:
 def _compare_sqlite_db_path() -> Path:
     raw = _env(
         "QWEN_COMPARE_DB_PATH",
-        str(REPO_ROOT / "data" / "spider_eval_synthetic" / "synthetic.db"),
+        str(_demo_data_dir() / "synthetic.db"),
     )
     return Path(raw).expanduser().resolve()
 
 
-def _database_preview_rows(limit: int = 5) -> list[dict[str, str]]:
+def _load_csv_rows(data_dir: Path) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
+    with (data_dir / "department.csv").open(newline="", encoding="utf-8") as f:
+        departments = list(csv.DictReader(f))
+    with (data_dir / "head.csv").open(newline="", encoding="utf-8") as f:
+        heads = list(csv.DictReader(f))
+    with (data_dir / "management.csv").open(newline="", encoding="utf-8") as f:
+        management = list(csv.DictReader(f))
+    return departments, heads, management
+
+
+def _ensure_compare_sqlite_db() -> Path:
     db = _compare_sqlite_db_path()
+    if db.is_file():
+        return db
+
+    data_dir = _demo_data_dir()
+    departments, heads, management = _load_csv_rows(data_dir)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            DROP TABLE IF EXISTS department;
+            DROP TABLE IF EXISTS management;
+            DROP TABLE IF EXISTS head;
+
+            CREATE TABLE department (
+              department_id VARCHAR,
+              name VARCHAR,
+              creation VARCHAR
+            );
+            CREATE TABLE management (
+              department_id VARCHAR,
+              head_id VARCHAR,
+              temporary_acting VARCHAR
+            );
+            CREATE TABLE head (
+              head_id VARCHAR,
+              name VARCHAR,
+              born_state VARCHAR
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO department (department_id, name, creation) VALUES (?, ?, ?)",
+            [(r["department_id"], r["name"], r["creation"]) for r in departments],
+        )
+        conn.executemany(
+            "INSERT INTO head (head_id, name, born_state) VALUES (?, ?, ?)",
+            [(r["head_id"], r["name"], r["born_state"]) for r in heads],
+        )
+        conn.executemany(
+            "INSERT INTO management (department_id, head_id, temporary_acting) VALUES (?, ?, ?)",
+            [(r["department_id"], r["head_id"], r["temporary_acting"]) for r in management],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+def _database_preview_rows(limit: int = 5) -> list[dict[str, str]]:
+    db = _ensure_compare_sqlite_db()
     if db.is_file():
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
@@ -409,13 +478,10 @@ def _database_preview_rows(limit: int = 5) -> list[dict[str, str]]:
         finally:
             conn.close()
 
-    data_dir = REPO_ROOT / "data" / "spider_eval_synthetic"
-    with (data_dir / "department.csv").open(newline="", encoding="utf-8") as f:
-        departments = {r["department_id"]: r for r in csv.DictReader(f)}
-    with (data_dir / "head.csv").open(newline="", encoding="utf-8") as f:
-        heads = {r["head_id"]: r for r in csv.DictReader(f)}
-    with (data_dir / "management.csv").open(newline="", encoding="utf-8") as f:
-        management = list(csv.DictReader(f))
+    data_dir = _demo_data_dir()
+    dept_rows, head_rows, management = _load_csv_rows(data_dir)
+    departments = {r["department_id"]: r for r in dept_rows}
+    heads = {r["head_id"]: r for r in head_rows}
 
     preview: list[dict[str, str]] = []
     for rel in management:
@@ -555,9 +621,7 @@ def _execute_compare_sql(sql: str, *, row_limit: int = 150) -> str:
     ok, stmt = _compare_validate_select(sql)
     if not ok:
         return f"Error: {stmt}"
-    db = _compare_sqlite_db_path()
-    if not db.is_file():
-        return f"Error: database file not found: {db}"
+    db = _ensure_compare_sqlite_db()
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
@@ -591,7 +655,7 @@ def run_compare(user_request: str):
 
 
 def main() -> None:
-    hub = _hub_model_id()
+    hub = BASE_MODEL_ID
     fine_tuned_hub = FINETUNED_HUB_MODEL_ID
     title = "Small Text-to-SQL LLM Demo"
     hero = f"""
@@ -743,10 +807,11 @@ def main() -> None:
             outputs=[out_local, out_local_result, out_hf, out_hf_result],
         )
 
-    host = _env("QWEN_COMPARE_GRADIO_HOST", "127.0.0.1")
-    preferred = int(_env("QWEN_COMPARE_GRADIO_PORT", "7861") or "7861")
-    port = _first_free_port(host, preferred)
-    if port != preferred:
+    in_space = bool(os.environ.get("SPACE_ID"))
+    host = _env("QWEN_COMPARE_GRADIO_HOST", "0.0.0.0" if in_space else "127.0.0.1")
+    preferred = int(_env("QWEN_COMPARE_GRADIO_PORT", os.environ.get("PORT", "7860") if in_space else "7861"))
+    port = preferred if in_space else _first_free_port(host, preferred)
+    if not in_space and port != preferred:
         print(f"Port {preferred} busy; using {port}.", file=sys.stderr)
     demo.launch(server_name=host, server_port=port)
 
