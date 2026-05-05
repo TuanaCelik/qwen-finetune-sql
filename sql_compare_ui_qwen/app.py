@@ -675,8 +675,8 @@ def main() -> None:
             <strong>dummy SQLite database</strong>, and shows the query results side by side.
         </p>
         <p class="hero-meta">
-            Fine-tuned model: <code>{fine_tuned_hub}</code>
-            &nbsp; Training container family: <code>Hugging Face PyTorch Training DLC</code>
+            Fine-tuned model: <b>{fine_tuned_hub}</b>
+            &nbsp; Training container family: <b>Hugging Face PyTorch Training DLC</b>
         </p>
     </div>
     """

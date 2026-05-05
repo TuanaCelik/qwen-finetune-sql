@@ -65,8 +65,8 @@ uv run hf repo create Tuana/qwen-text2sql-demo \
 
 uv run hf upload Tuana/qwen-text2sql-demo sql_compare_ui_qwen . \
   --repo-type space \
-  --exclude "sql_compare_ui_qwen/.env" \
-  --exclude "sql_compare_ui_qwen/data/spider_eval_synthetic/synthetic.db" \
+  --exclude ".env" \
+  --exclude "data/spider_eval_synthetic/synthetic.db" \
   --exclude "**/__pycache__/**" \
   --exclude "local_inference.py" \
   --exclude "inference_device.py"
