@@ -1,4 +1,4 @@
-"""Pick dtype / ``device_map`` / post-load ``.to()`` for Qwen inference (CUDA, MPS, CPU)."""
+"""Device selection for Qwen inference."""
 from __future__ import annotations
 
 import os
@@ -18,14 +18,11 @@ def _mps_load_dtype() -> torch.dtype:
         return torch.bfloat16
     if raw in ("fp16", "float16", "16"):
         return torch.float16
-    # Default: float32 avoids more MPS op gaps; set QWEN_COMPARE_MPS_DTYPE=fp16 for speed.
     return torch.float32
 
 
 @dataclass(frozen=True)
 class QwenDeviceSpec:
-    """``device_map`` is passed to ``from_pretrained``; ``to_device`` is applied after load if set."""
-
     torch_dtype: torch.dtype
     device_map: str | None
     to_device: str | None
@@ -33,11 +30,6 @@ class QwenDeviceSpec:
 
 
 def pick_qwen_device_spec(*, env_device_map: str) -> QwenDeviceSpec:
-    """Resolve device from env (e.g. ``QWEN_COMPARE_LOCAL_DEVICE_MAP`` / ``QWEN_COMPARE_HUB_DEVICE_MAP``).
-
-    Empty env → auto: CUDA ``device_map=auto`` + bf16, else Apple MPS (``.to("mps")`` + MPS dtype),
-    else CPU float32.
-    """
     raw = (os.environ.get(env_device_map) or "").strip().lower()
     tag = env_device_map
 
@@ -65,7 +57,6 @@ def pick_qwen_device_spec(*, env_device_map: str) -> QwenDeviceSpec:
             return QwenDeviceSpec(_mps_load_dtype(), None, "mps", f"{tag}={raw!r}->mps_unknown_map")
         return QwenDeviceSpec(torch.float32, None, "cpu", f"{tag}={raw!r}->cpu")
 
-    # Default (unset): prefer CUDA, then MPS, else CPU
     if torch.cuda.is_available():
         return QwenDeviceSpec(torch.bfloat16, "auto", None, f"{tag}unset->cuda_auto")
     if mps_is_available():
@@ -84,7 +75,6 @@ def log_qwen_device(kind: str, model: torch.nn.Module, spec: QwenDeviceSpec) -> 
 
 
 def pick_hub_device_spec() -> QwenDeviceSpec:
-    """Hub loader: ``QWEN_COMPARE_HUB_DEVICE_MAP`` if set, else same rules as ``QWEN_COMPARE_LOCAL_DEVICE_MAP``."""
     if (os.environ.get("QWEN_COMPARE_HUB_DEVICE_MAP") or "").strip():
         return pick_qwen_device_spec(env_device_map="QWEN_COMPARE_HUB_DEVICE_MAP")
     return pick_qwen_device_spec(env_device_map="QWEN_COMPARE_LOCAL_DEVICE_MAP")

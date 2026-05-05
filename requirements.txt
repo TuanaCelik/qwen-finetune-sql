@@ -1,10 +1,11 @@
 # Pip fallback — preferred: `uv venv && uv sync` (see pyproject.toml).
 #
-# Local: submit Vertex jobs + deploy (scripts/finetune_deploy_gemma4.py)
+# Local: submit Vertex jobs + deploy (scripts/finetune_deploy_qwen.py)
 google-cloud-aiplatform>=1.38.0
 python-dotenv>=1.0.0
 
-# HF stack: mirror pyproject.toml / train_sql_sft.HF_PIP_SPECS (Vertex entrypoint also upgrades torch when VERTEX_UPGRADE_TORCH=1).
+# HF stack: mirror pyproject.toml / scripts/train_qwen_sql_sft.py HF_PIP_SPECS.
+# The Vertex entrypoint upgrades torch inside the training container.
 transformers>=5.5.0
 datasets>=2.16.0
 peft>=0.11.0

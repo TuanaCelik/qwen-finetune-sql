@@ -1,7 +1,7 @@
 """
 Load merged Qwen SQL fine-tune from ``<repo>/.cache/<name>/`` (same layout as
 ``scripts/query_finetuned_qwen.py``). Basename: **QWEN_COMPARE_LOCAL_MERGED_NAME**, else
-**LOCAL_QWEN_MERGED_CACHE_NAME**, else ``qwen-sql-merged``.
+**LOCAL_QWEN_MERGED_CACHE_NAME**, else ``qwen35-synthetic-1k-ep4``.
 """
 from __future__ import annotations
 
@@ -32,10 +32,10 @@ def _env(name: str, default: str = "") -> str:
 def _merged_cache_basename() -> str:
     name = (
         _env("QWEN_COMPARE_LOCAL_MERGED_NAME")
-        or _env("LOCAL_QWEN_MERGED_CACHE_NAME", "qwen-sql-merged")
+        or _env("LOCAL_QWEN_MERGED_CACHE_NAME", "qwen35-synthetic-1k-ep4")
     ).strip()
     if not name or "/" in name or "\\" in name:
-        name = "qwen-sql-merged"
+        name = "qwen35-synthetic-1k-ep4"
     return name
 
 

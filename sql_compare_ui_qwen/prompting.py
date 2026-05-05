@@ -1,7 +1,4 @@
-"""Text-to-SQL user prompt — same body as ``train_qwen_sql_sft.py`` / repo ``sql_compare_ui.prompting``.
-
-Schema override: **QWEN_COMPARE_DB_SCHEMA** (falls back to the same default DDL as Gemma compare).
-"""
+"""Text-to-SQL prompt shared by training and inference."""
 from __future__ import annotations
 
 import os
@@ -37,7 +34,6 @@ def database_schema() -> str:
 
 
 def build_prompt(user_request: str) -> str:
-    """Build the **user** message body (before ``apply_chat_template``)."""
     schema = database_schema()
     req = (user_request or "").strip()
     return (

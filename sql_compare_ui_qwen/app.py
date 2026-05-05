@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Gradio: **SQL compare** — locally merged Qwen SQL fine-tune vs Hub base (Transformers).
+Gradio: **SQL compare** — fine-tuned Qwen SQL demo model vs Hub base (Transformers).
 
 No smolagents tab (compare only).
 
-Env (see ``sql_compare_ui_qwen/.env.example`` and README): ``QWEN_COMPARE_*`` for UI; repo ``.env``
-for ``HF_TOKEN``, ``QWEN_MODEL_ID``, ``LOCAL_QWEN_MERGED_CACHE_NAME``, ``QWEN_OUTPUT_GCS_PREFIX``, etc.
-
-Sync merged weights: ``uv run python scripts/query_finetuned_qwen.py --sync`` from repo root.
+Env (see ``sql_compare_ui_qwen/.env.example`` and README): ``QWEN_COMPARE_*`` for UI;
+repo ``.env`` for ``HF_TOKEN`` and shared project settings.
 """
 from __future__ import annotations
 
@@ -16,12 +14,14 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
 
-if os.environ.get("QWEN_COMPARE_SHOW_RESOURCE_TRACKER_WARNINGS", "").strip() != "1":
+if os.environ.get("QWEN_COMPARE_SHOW_RESOURCE_TRACKER_WARNINGS", "").strip().lower() != "true":
     _pw = os.environ.get("PYTHONWARNINGS", "").strip()
     _rt = "ignore:resource_tracker:UserWarning"
     os.environ["PYTHONWARNINGS"] = f"{_pw},{_rt}" if _pw else _rt
 
 import gc
+import csv
+import html
 import io
 import re
 import socket
@@ -29,7 +29,6 @@ import sqlite3
 import sys
 import warnings
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
@@ -47,7 +46,7 @@ except ImportError:
 
 
 def _install_resource_tracker_warning_silencer() -> None:
-    if os.environ.get("QWEN_COMPARE_SHOW_RESOURCE_TRACKER_WARNINGS", "").strip() == "1":
+    if os.environ.get("QWEN_COMPARE_SHOW_RESOURCE_TRACKER_WARNINGS", "").strip().lower() == "true":
         return
     warnings.filterwarnings(
         "ignore",
@@ -84,6 +83,10 @@ from sql_compare_ui_qwen.prompting import build_prompt
 _hf_model = None
 _hf_tokenizer = None
 _hf_model_id: str | None = None
+_ft_hf_model = None
+_ft_hf_tokenizer = None
+_ft_hf_model_id: str | None = None
+FINETUNED_HUB_MODEL_ID = "Tuana/qwen35-08b-text2sql"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -94,11 +97,7 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _hub_model_id() -> str:
-    return (
-        _env("QWEN_COMPARE_HUB_MODEL_ID")
-        or _env("QWEN_MODEL_ID")
-        or "Qwen/Qwen3.5-0.8B"
-    )
+    return _env("QWEN_COMPARE_HUB_MODEL_ID") or "Qwen/Qwen3.5-0.8B"
 
 
 def _hf_token() -> str | None:
@@ -117,6 +116,60 @@ def _first_free_port(host: str, start: int, *, max_tries: int = 40) -> int:
     raise RuntimeError(f"No free TCP port in {start}..{start + max_tries - 1} on {host!r}")
 
 
+def _mps_is_available() -> bool:
+    b = getattr(torch.backends, "mps", None)
+    return b is not None and b.is_available()
+
+
+def _mps_load_dtype() -> torch.dtype:
+    raw = _env("QWEN_COMPARE_MPS_DTYPE").lower()
+    if raw in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if raw in ("fp16", "float16", "16"):
+        return torch.float16
+    return torch.float32
+
+
+def _model_load_spec() -> tuple[torch.dtype, str | None, str | None, str]:
+    raw = (
+        _env("QWEN_COMPARE_HUB_DEVICE_MAP")
+        or _env("QWEN_COMPARE_DEVICE_MAP")
+    ).lower()
+    if raw in ("none", "null", "cpu"):
+        return torch.float32, None, "cpu", raw or "cpu"
+    if raw == "mps":
+        if _mps_is_available():
+            return _mps_load_dtype(), None, "mps", "mps"
+        return torch.float32, None, "cpu", "mps_unavailable"
+    if raw.startswith("cuda") or raw == "auto":
+        if torch.cuda.is_available():
+            return torch.bfloat16, ("auto" if raw == "auto" else raw), None, raw
+        if _mps_is_available():
+            return _mps_load_dtype(), None, "mps", f"{raw}_cuda_missing"
+        return torch.float32, None, "cpu", f"{raw}_no_accel"
+    if raw:
+        if torch.cuda.is_available():
+            return torch.bfloat16, raw, None, raw
+        if _mps_is_available():
+            return _mps_load_dtype(), None, "mps", f"{raw}_mps_fallback"
+        return torch.float32, None, "cpu", f"{raw}_cpu_fallback"
+    if torch.cuda.is_available():
+        return torch.bfloat16, "auto", None, "cuda_auto"
+    if _mps_is_available():
+        return _mps_load_dtype(), None, "mps", "mps_default"
+    return torch.float32, None, "cpu", "cpu_default"
+
+
+def _log_model_device(kind: str, model: torch.nn.Module, reason: str, dtype: torch.dtype, device_map: str | None, to_device: str | None) -> None:
+    p = next(model.parameters())
+    print(
+        f"QWEN_DEVICE {kind}: reason={reason} | param_device={p.device} | "
+        f"param_dtype={p.dtype} | load_dtype={dtype} | device_map={device_map!r} | "
+        f"post_to={to_device!r}",
+        flush=True,
+    )
+
+
 def unload_hf_model() -> None:
     global _hf_model, _hf_tokenizer, _hf_model_id
     _hf_model = None
@@ -132,13 +185,28 @@ def unload_hf_model() -> None:
             pass
 
 
+def unload_ft_hf_model() -> None:
+    global _ft_hf_model, _ft_hf_tokenizer, _ft_hf_model_id
+    _ft_hf_model = None
+    _ft_hf_tokenizer = None
+    _ft_hf_model_id = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        try:
+            torch.mps.empty_cache()
+        except Exception:
+            pass
+
+
 def predict_hf(prompt: str) -> str:
     global _hf_model, _hf_tokenizer, _hf_model_id
 
-    if _env("QWEN_COMPARE_SKIP_HUB") == "1":
+    if _env("QWEN_COMPARE_SKIP_HUB").lower() == "true":
         return (
-            "Hub column skipped (`QWEN_COMPARE_SKIP_HUB=1`). Remove or set to anything other than "
-            "`1` to load the Hub model again."
+            "Hub column skipped (`QWEN_COMPARE_SKIP_HUB=true`). Set `QWEN_COMPARE_SKIP_HUB=false` "
+            "to load the Hub model again."
         )
 
     mid = _hub_model_id()
@@ -149,11 +217,7 @@ def predict_hf(prompt: str) -> str:
 
     try:
         if _hf_model is None or _hf_model_id != mid:
-            from sql_compare_ui_qwen.inference_device import log_qwen_device, pick_hub_device_spec
-            from sql_compare_ui_qwen.local_inference import _apply_hf_load_env
-
-            _apply_hf_load_env()
-            spec = pick_hub_device_spec()
+            dtype, device_map, to_device, device_reason = _model_load_spec()
             tok_kw: dict = {"trust_remote_code": True, "use_fast": True}
             if token:
                 tok_kw["token"] = token
@@ -172,21 +236,21 @@ def predict_hf(prompt: str) -> str:
 
             kw: dict = {
                 "trust_remote_code": True,
-                "torch_dtype": spec.torch_dtype,
-                "low_cpu_mem_usage": spec.device_map is None,
+                "torch_dtype": dtype,
+                "low_cpu_mem_usage": device_map is None,
             }
             if token:
                 kw["token"] = token
-            if spec.device_map is not None:
-                kw["device_map"] = spec.device_map
+            if device_map is not None:
+                kw["device_map"] = device_map
             try:
                 model = AutoModelForImageTextToText.from_pretrained(mid, **kw)
             except (OSError, ValueError, TypeError):
                 model = AutoModelForCausalLM.from_pretrained(mid, **kw)
-            if spec.to_device:
-                model = model.to(spec.to_device)
+            if to_device:
+                model = model.to(to_device)
             model.eval()
-            log_qwen_device("hub", model, spec)
+            _log_model_device("hub", model, device_reason, dtype, device_map, to_device)
             _hf_model, _hf_tokenizer, _hf_model_id = model, tokenizer, mid
 
         assert _hf_tokenizer is not None and _hf_model is not None
@@ -223,12 +287,191 @@ def predict_hf(prompt: str) -> str:
         return f"Hub base: {ex!r}"
 
 
+def predict_finetuned_hf(prompt: str) -> str:
+    global _ft_hf_model, _ft_hf_tokenizer, _ft_hf_model_id
+
+    if _env("QWEN_COMPARE_SKIP_FINETUNED").lower() == "true":
+        return (
+            "Fine-tuned column skipped (`QWEN_COMPARE_SKIP_FINETUNED=true`). "
+            "Set `QWEN_COMPARE_SKIP_FINETUNED=false` to load it again."
+        )
+
+    mid = FINETUNED_HUB_MODEL_ID
+    token = _hf_token()
+    max_new = int(
+        _env("QWEN_COMPARE_MAX_NEW_TOKENS", _env("MAX_NEW_TOKENS", "512")) or "512"
+    )
+
+    try:
+        if _ft_hf_model is None or _ft_hf_model_id != mid:
+            dtype, device_map, to_device, device_reason = _model_load_spec()
+            tok_kw: dict = {"trust_remote_code": True, "use_fast": True}
+            if token:
+                tok_kw["token"] = token
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(mid, **tok_kw)
+            except (AttributeError, TypeError) as e:
+                err = str(e)
+                if "'list' object has no attribute 'keys'" in err or "not a string" in err.lower():
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        mid, **tok_kw, extra_special_tokens={}
+                    )
+                else:
+                    raise
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            kw: dict = {
+                "trust_remote_code": True,
+                "torch_dtype": dtype,
+                "low_cpu_mem_usage": device_map is None,
+            }
+            if token:
+                kw["token"] = token
+            if device_map is not None:
+                kw["device_map"] = device_map
+            try:
+                model = AutoModelForImageTextToText.from_pretrained(mid, **kw)
+            except (OSError, ValueError, TypeError):
+                model = AutoModelForCausalLM.from_pretrained(mid, **kw)
+            if to_device:
+                model = model.to(to_device)
+            model.eval()
+            _log_model_device("fine-tuned-hf", model, device_reason, dtype, device_map, to_device)
+            _ft_hf_model, _ft_hf_tokenizer, _ft_hf_model_id = model, tokenizer, mid
+
+        assert _ft_hf_tokenizer is not None and _ft_hf_model is not None
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            text = _ft_hf_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError:
+            text = _ft_hf_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        inputs = _ft_hf_tokenizer(text, return_tensors="pt")
+        dev = next(_ft_hf_model.parameters()).device
+        inputs = {k: v.to(dev) for k, v in inputs.items()}
+
+        with torch.inference_mode():
+            out = _ft_hf_model.generate(
+                **inputs,
+                max_new_tokens=max_new,
+                do_sample=False,
+                pad_token_id=_ft_hf_tokenizer.pad_token_id,
+                eos_token_id=_ft_hf_tokenizer.eos_token_id,
+            )
+        in_len = inputs["input_ids"].shape[-1]
+        gen_ids = out[0, in_len:]
+        return _ft_hf_tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    except Exception as ex:
+        return f"Fine-tuned HF: {ex!r}"
+
+
 def _compare_sqlite_db_path() -> Path:
     raw = _env(
         "QWEN_COMPARE_DB_PATH",
         str(REPO_ROOT / "data" / "spider_eval_synthetic" / "synthetic.db"),
     )
     return Path(raw).expanduser().resolve()
+
+
+def _database_preview_rows(limit: int = 5) -> list[dict[str, str]]:
+    db = _compare_sqlite_db_path()
+    if db.is_file():
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                  d.department_id,
+                  d.name AS department,
+                  d.creation,
+                  h.name AS department_head,
+                  h.born_state,
+                  m.temporary_acting
+                FROM department AS d
+                JOIN management AS m ON m.department_id = d.department_id
+                JOIN head AS h ON h.head_id = m.head_id
+                ORDER BY d.department_id, h.head_id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    data_dir = REPO_ROOT / "data" / "spider_eval_synthetic"
+    with (data_dir / "department.csv").open(newline="", encoding="utf-8") as f:
+        departments = {r["department_id"]: r for r in csv.DictReader(f)}
+    with (data_dir / "head.csv").open(newline="", encoding="utf-8") as f:
+        heads = {r["head_id"]: r for r in csv.DictReader(f)}
+    with (data_dir / "management.csv").open(newline="", encoding="utf-8") as f:
+        management = list(csv.DictReader(f))
+
+    preview: list[dict[str, str]] = []
+    for rel in management:
+        dept = departments.get(rel["department_id"])
+        head = heads.get(rel["head_id"])
+        if not dept or not head:
+            continue
+        preview.append(
+            {
+                "department_id": dept["department_id"],
+                "department": dept["name"],
+                "creation": dept["creation"],
+                "department_head": head["name"],
+                "born_state": head["born_state"],
+                "temporary_acting": rel["temporary_acting"],
+            }
+        )
+        if len(preview) >= limit:
+            break
+    return preview
+
+
+def _database_preview_html() -> str:
+    rows = _database_preview_rows()
+    headers = [
+        "department_id",
+        "department",
+        "creation",
+        "department_head",
+        "born_state",
+        "temporary_acting",
+    ]
+    body = "\n".join(
+        "<tr>"
+        + "".join(f"<td>{html.escape(str(row.get(h, '')))}</td>" for h in headers)
+        + "</tr>"
+        for row in rows
+    )
+    header = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+    return f"""
+    <section class="db-preview">
+        <div>
+            <p class="eyebrow">Dummy database preview</p>
+            <h2>What the model is querying</h2>
+            <p>
+                The demo database has three related tables:
+                <code>department</code>, <code>management</code>, and <code>head</code>.
+                These five rows are real examples from the local synthetic database.
+            </p>
+        </div>
+        <table>
+            <thead><tr>{header}</tr></thead>
+            <tbody>{body}</tbody>
+        </table>
+    </section>
+    """
 
 
 def _compare_validate_select(sql: str) -> tuple[bool, str]:
@@ -332,36 +575,13 @@ def _execute_compare_sql(sql: str, *, row_limit: int = 150) -> str:
         conn.close()
 
 
-def predict_local_ft(prompt: str) -> str:
-    from sql_compare_ui_qwen import local_inference
-
-    if _env("QWEN_COMPARE_SKIP_LOCAL") == "1":
-        return (
-            "Local column skipped (`QWEN_COMPARE_SKIP_LOCAL=1`). Remove or set to anything other "
-            "than `1` to load local again."
-        )
-
-    local_dir = local_inference.default_local_merged_dir()
-    if not (local_dir / "config.json").is_file():
-        return (
-            f"No local checkpoint at {local_dir}. From repo root run:\n"
-            "  uv run python scripts/query_finetuned_qwen.py --sync"
-        )
-    try:
-        return local_inference.generate_local(prompt, model_dir=local_dir)
-    except Exception as ex:
-        return f"Local: {ex!r}"
-
-
 def run_compare(user_request: str):
     prompt = build_prompt(user_request)
-    out_local = predict_local_ft(prompt)
-    if _env("QWEN_COMPARE_SEQUENTIAL_UNLOAD", "1") == "1" and _env("QWEN_COMPARE_SKIP_LOCAL") != "1":
-        from sql_compare_ui_qwen import local_inference
-
-        local_inference.unload_local_model()
+    out_local = predict_finetuned_hf(prompt)
+    if _env("QWEN_COMPARE_SEQUENTIAL_UNLOAD", "true").lower() == "true" and _env("QWEN_COMPARE_SKIP_FINETUNED").lower() != "true":
+        unload_ft_hf_model()
     out_hf = predict_hf(prompt)
-    if _env("QWEN_COMPARE_SEQUENTIAL_UNLOAD", "1") == "1" and _env("QWEN_COMPARE_SKIP_HUB") != "1":
+    if _env("QWEN_COMPARE_SEQUENTIAL_UNLOAD", "true").lower() == "true" and _env("QWEN_COMPARE_SKIP_HUB").lower() != "true":
         unload_hf_model()
     sql_local = _extract_sql(out_local)
     sql_hf = _extract_sql(out_hf)
@@ -371,40 +591,152 @@ def run_compare(user_request: str):
 
 
 def main() -> None:
-    from sql_compare_ui_qwen import local_inference as _li
-
     hub = _hub_model_id()
-    cache = _li.default_local_merged_dir().name
-    title = "SQL compare (Qwen) — local merged vs Hub base"
-    desc = (
-        f"**Hub**: `{hub}` (override with **`QWEN_COMPARE_HUB_MODEL_ID`** or repo **`QWEN_MODEL_ID`**). "
-        f"**Local merged**: **`<repo>/.cache/{cache}/`** (**`QWEN_COMPARE_LOCAL_MERGED_NAME`** or "
-        "**`LOCAL_QWEN_MERGED_CACHE_NAME`**; same basename as **`query_finetuned_qwen.py --sync`**). "
-        "Each **Run both** unloads local before loading Hub, then unloads Hub (see "
-        "**`QWEN_COMPARE_SEQUENTIAL_UNLOAD`**). **`QWEN_COMPARE_SKIP_HUB=1`** / **`QWEN_COMPARE_SKIP_LOCAL=1`** "
-        "for single-column mode.\n\n"
-        "SQLite runs the first extracted `SELECT`/`WITH` against **`QWEN_COMPARE_DB_PATH`** "
-        "(default: `data/spider_eval_synthetic/synthetic.db`)."
+    fine_tuned_hub = FINETUNED_HUB_MODEL_ID
+    title = "Small Text-to-SQL LLM Demo"
+    hero = f"""
+    <div class="hero">
+        <h1>{title}</h1>
+        <p>
+            Ask a natural-language question and compare how a small fine-tuned model performs
+            against the untouched Hugging Face base model, <strong>{hub}</strong>.
+        </p>
+        <p>
+            The fine-tuned model starts from <strong>{hub}</strong> and is trained for
+            <strong>Text-to-SQL on your database</strong> with Vertex AI on Google Cloud,
+            using Hugging Face PyTorch Deep Learning Containers.
+        </p>
+        <p>
+            The app extracts each model's generated SQL, runs it against a read-only
+            <strong>dummy SQLite database</strong>, and shows the query results side by side.
+        </p>
+        <p class="hero-meta">
+            Fine-tuned model: <code>{fine_tuned_hub}</code>
+            &nbsp; Training container family: <code>Hugging Face PyTorch Training DLC</code>
+        </p>
+    </div>
+    """
+    theme = gr.themes.Monochrome(
+        primary_hue="violet",
+        secondary_hue="cyan",
+        neutral_hue="slate",
+    ).set(
+        body_background_fill="#07111f",
+        body_text_color="#e5edf8",
+        block_background_fill="#0f1b2d",
+        block_border_color="#23324a",
+        block_label_background_fill="#17243a",
+        block_label_text_color="#c7d2fe",
+        button_primary_background_fill="#7c3aed",
+        button_primary_background_fill_hover="#06b6d4",
+        button_primary_text_color="#ffffff",
+        input_background_fill="#0b1628",
+        input_border_color="#2d3f5f",
     )
+    css = """
+    .gradio-container {
+        background:
+            radial-gradient(circle at top left, rgba(124, 58, 237, 0.24), transparent 28rem),
+            radial-gradient(circle at top right, rgba(6, 182, 212, 0.18), transparent 24rem),
+            #07111f;
+    }
+    .hero {
+        padding: 1.2rem 1.4rem;
+        border: 1px solid #25314a;
+        border-radius: 18px;
+        background: linear-gradient(135deg, rgba(15, 27, 45, 0.95), rgba(30, 41, 59, 0.72));
+    }
+    .hero h1 {
+        margin-bottom: 0.4rem;
+    }
+    .hero p {
+        color: #dbeafe;
+        font-size: 1.02rem;
+        line-height: 1.55;
+        margin: 0.45rem 0;
+    }
+    .hero code {
+        color: #a5f3fc;
+        background: rgba(8, 47, 73, 0.6);
+        border-radius: 6px;
+        padding: 0.12rem 0.3rem;
+    }
+    .hero-meta {
+        color: #b6c7e3 !important;
+        font-size: 0.92rem !important;
+    }
+    .db-preview {
+        margin-top: 1rem;
+        padding: 1.1rem 1.25rem;
+        border: 1px solid #25314a;
+        border-radius: 18px;
+        background: rgba(11, 22, 40, 0.78);
+        box-shadow: 0 18px 55px rgba(0, 0, 0, 0.22);
+    }
+    .db-preview .eyebrow {
+        color: #67e8f9;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        margin: 0;
+        text-transform: uppercase;
+    }
+    .db-preview h2 {
+        color: #eef4ff;
+        margin: 0.15rem 0 0.35rem;
+    }
+    .db-preview p {
+        color: #cbd5e1;
+        margin: 0 0 0.85rem;
+    }
+    .db-preview code {
+        color: #a5f3fc;
+        background: rgba(8, 47, 73, 0.65);
+        border-radius: 6px;
+        padding: 0.08rem 0.28rem;
+    }
+    .db-preview table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border-radius: 12px;
+        font-size: 0.9rem;
+    }
+    .db-preview th,
+    .db-preview td {
+        border-bottom: 1px solid #23324a;
+        padding: 0.62rem 0.7rem;
+        text-align: left;
+    }
+    .db-preview th {
+        color: #bfdbfe;
+        background: rgba(30, 41, 59, 0.92);
+        font-weight: 700;
+    }
+    .db-preview td {
+        color: #e2e8f0;
+        background: rgba(15, 23, 42, 0.62);
+    }
+    """
 
-    with gr.Blocks(title=title) as demo:
-        gr.Markdown(f"# {title}")
-        gr.Markdown(desc)
+    with gr.Blocks(title=title, theme=theme, css=css) as demo:
+        gr.Markdown(hero)
+        gr.HTML(_database_preview_html())
         inp = gr.Textbox(
-            label="User request",
+            label="Ask the database",
             placeholder="e.g. List all department names.",
             lines=4,
         )
-        btn = gr.Button("Run both", variant="primary")
+        btn = gr.Button("Generate and compare SQL", variant="primary")
         with gr.Row(equal_height=False):
             with gr.Column(scale=1):
-                gr.Markdown("#### Local fine-tuned (merged)")
-                out_local = gr.Textbox(label="Model output", lines=12)
-                out_local_result = gr.Textbox(label="SQLite query result", lines=14)
+                gr.Markdown("#### Fine-tuned model from Hugging Face")
+                out_local = gr.Textbox(label="Generated SQL / model output", lines=12)
+                out_local_result = gr.Textbox(label="Dummy database result", lines=14)
             with gr.Column(scale=1):
                 gr.Markdown("#### Hub base (Transformers)")
-                out_hf = gr.Textbox(label="Model output", lines=12)
-                out_hf_result = gr.Textbox(label="SQLite query result", lines=14)
+                out_hf = gr.Textbox(label="Generated SQL / model output", lines=12)
+                out_hf_result = gr.Textbox(label="Dummy database result", lines=14)
         btn.click(
             fn=run_compare,
             inputs=[inp],

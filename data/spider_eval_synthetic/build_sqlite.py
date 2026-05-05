@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate synthetic department / management / head CSVs (~110 table rows) and
-import them into SQLite for ad-hoc SQL checks (same DDL shape as sql_compare_ui/prompting.py).
+import them into SQLite for ad-hoc SQL checks (same DDL shape as sql_compare_ui_qwen/prompting.py).
 
 Usage (from repo root):
   uv run python data/spider_eval_synthetic/build_sqlite.py
@@ -48,7 +48,6 @@ def _departments() -> list[tuple[str, str, str]]:
 
 
 def _heads() -> list[tuple[str, str, str]]:
-    # H01/H02 both Alabama — supports INTERSECT (Treasury vs Homeland) with different heads.
     rows: list[tuple[str, str, str]] = [
         ("H01", "Alice Smith", "Alabama"),
         ("H02", "Bob Jones", "Alabama"),
@@ -95,7 +94,6 @@ def _heads() -> list[tuple[str, str, str]]:
 
 
 def _management() -> list[tuple[str, str, str]]:
-    """(department_id, head_id, temporary_acting). D16–D18 have no rows (NOT IN demos). D01/D02 multi-row for HAVING."""
     rows: list[tuple[str, str, str]] = [
         ("D01", "H01", "No"),
         ("D01", "H03", "Yes"),

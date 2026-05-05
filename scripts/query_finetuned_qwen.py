@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
 """
-Sync merged **Qwen3.5** SQL SFT weights from GCS and run greedy generation locally (Transformers).
-
-Uses the same **user** message body as ``train_qwen_sql_sft.py`` / ``sql_compare_ui.prompting.build_prompt``,
-then ``apply_chat_template`` on ``[user, assistant]`` with ``add_generation_prompt=True`` (same idea as
-Gemma local inference).
-
-Paths (override in ``.env`` in a later iteration):
-
 - **GCS_BUCKET** + **QWEN_OUTPUT_GCS_PREFIX** → ``gs://…/<prefix>/merged``
 - Optional **QWEN_GCS_MERGED_URI** overrides that URI
 - **LOCAL_QWEN_MERGED_CACHE_NAME** → ``<repo>/.cache/<name>/``
@@ -54,16 +46,16 @@ def gcs_merged_uri() -> str:
     if override:
         return override.rstrip("/")
     bucket = _env("GCS_BUCKET").replace("gs://", "").strip("/")
-    prefix = _env("QWEN_OUTPUT_GCS_PREFIX", "qwen-sql/qwen3.5-0.8b-run-1").strip("/")
+    prefix = _env("QWEN_OUTPUT_GCS_PREFIX", "qwen-sql/qwen35-synthetic-1k-ep4").strip("/")
     if not bucket:
         raise ValueError("Set GCS_BUCKET or QWEN_GCS_MERGED_URI.")
     return f"gs://{bucket}/{prefix}/merged"
 
 
 def default_local_merged_dir() -> Path:
-    name = _env("LOCAL_QWEN_MERGED_CACHE_NAME", "qwen-sql-merged")
+    name = _env("LOCAL_QWEN_MERGED_CACHE_NAME", "qwen35-synthetic-1k-ep4")
     if not name or "/" in name or "\\" in name:
-        name = "qwen-sql-merged"
+        name = "qwen35-synthetic-1k-ep4"
     return (ROOT / ".cache" / name).resolve()
 
 
@@ -188,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         "--prompt",
         type=str,
         default="",
-        help="Natural-language question (same template as sql_compare_ui / train_qwen_sql_sft).",
+        help="Natural-language question (same template as sql_compare_ui_qwen / scripts/train_qwen_sql_sft.py).",
     )
     p.add_argument("--max-new-tokens", type=int, default=None, help="Override MAX_NEW_TOKENS (default 512).")
     args = p.parse_args(argv)
@@ -217,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No checkpoint at {local_dir}. Run with --sync first.", file=sys.stderr)
         return 1
 
-    from sql_compare_ui.prompting import build_prompt
+    from sql_compare_ui_qwen.prompting import build_prompt
 
     user_body = build_prompt(args.prompt.strip())
     print("Generating …")

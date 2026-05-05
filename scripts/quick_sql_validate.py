@@ -45,7 +45,6 @@ try:
 except ImportError:
     pass
 
-# (id, question, gold_sql) — gold verified against ``data/spider_eval_synthetic/synthetic.db``.
 BENCHMARK: list[tuple[str, str, str]] = [
     (
         "groupby_temp_acting",
@@ -204,7 +203,6 @@ def _cell_key(x: Any) -> str:
 
 
 def execute_fingerprint(db: Path, sql: str) -> tuple[str | None, tuple[tuple[str, ...], ...]]:
-    """Return (error or None, row multiset as sorted tuple of cell-string tuples — order-insensitive)."""
     ok, stmt = _compare_validate_select(sql)
     if not ok:
         return stmt, tuple()
@@ -226,7 +224,6 @@ def execute_fingerprint(db: Path, sql: str) -> tuple[str | None, tuple[tuple[str
 
 
 def run_gold_only(db: Path, cases: list[tuple[str, str, str]]) -> tuple[int, list[tuple[str, str]]]:
-    """Return (failure_count, [(case_id, outcome), ...])."""
     bad = 0
     rows: list[tuple[str, str]] = []
     t_block = time.perf_counter()
@@ -285,8 +282,6 @@ def _print_final_summary(
 
 
 class _HubGenerator:
-    """Load Hub Qwen **once**; each ``__call__(prompt)`` only tokenizes + generates."""
-
     def __init__(self, *, max_new_tokens: int) -> None:
         import torch
         from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
@@ -367,7 +362,6 @@ class _HubGenerator:
         gen_ids = out[0, in_len:]
         decoded = tok.decode(gen_ids, skip_special_tokens=True).strip()
         t_end = time.perf_counter()
-        # Tokenize+template is usually tiny; split prep vs generate for hub hot path.
         self._last_timing = {
             "prep": t_pre - t0,
             "generate": t_gen - t_pre,
@@ -397,7 +391,6 @@ def run_model_column(
     max_new_tokens: int,
     generate_fn,
 ) -> tuple[int, list[tuple[str, str, str]]]:
-    """Return (failure_count, [(prog, case_id, outcome), ...]). failure = non-MATCH."""
     ok_n = 0
     exec_fail = 0
     mismatch = 0
