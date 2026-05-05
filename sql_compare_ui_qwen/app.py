@@ -95,7 +95,7 @@ BASE_MODEL_ID = "Qwen/Qwen3.5-0.8B"
 DEMO_QUESTION_EXAMPLES: tuple[str, ...] = (
     "Count how many management rows exist per temporary_acting value",
     "List all department names.",
-    "Count how many management rows exist per department."
+    "Count how many management rows exist per department.",
     "Which departments were created before the year 2000?",
     "For each department, show the department name and the name of its head.",
     "List the names of heads who were born in Alabama.",
