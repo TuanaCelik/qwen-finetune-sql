@@ -92,6 +92,18 @@ _ft_hf_model_id: str | None = None
 FINETUNED_HUB_MODEL_ID = "Tuana/qwen35-08b-text2sql"
 BASE_MODEL_ID = "Qwen/Qwen3.5-0.8B"
 
+DEMO_QUESTION_EXAMPLES: tuple[str, ...] = (
+    "Count how many management rows exist per temporary_acting value",
+    "List all department names.",
+    "Count how many management rows exist per department."
+    "Which departments were created before the year 2000?",
+    "For each department, show the department name and the name of its head.",
+    "List the names of heads who were born in Alabama.",
+    "Which heads are temporary acting in their management role?",
+    "How many departments are there?",
+)
+
+
 def _env(name: str, default: str = "") -> str:
     v = os.environ.get(name)
     if v is None or str(v).strip() == "":
@@ -696,6 +708,22 @@ def main() -> None:
         button_primary_text_color="#ffffff",
         input_background_fill="#0b1628",
         input_border_color="#2d3f5f",
+        checkbox_label_background_fill="#0b1628",
+        checkbox_label_background_fill_dark="#0b1628",
+        checkbox_label_background_fill_hover="#152238",
+        checkbox_label_background_fill_hover_dark="#152238",
+        checkbox_label_background_fill_selected="#7c3aed",
+        checkbox_label_background_fill_selected_dark="#7c3aed",
+        checkbox_label_border_color="#2d3f5f",
+        checkbox_label_border_color_dark="#2d3f5f",
+        checkbox_label_border_color_hover="#3d5278",
+        checkbox_label_border_color_hover_dark="#3d5278",
+        checkbox_label_border_color_selected="#c4b5fd",
+        checkbox_label_border_color_selected_dark="#c4b5fd",
+        checkbox_label_text_color="#e5edf8",
+        checkbox_label_text_color_dark="#e5edf8",
+        checkbox_label_text_color_selected="#ffffff",
+        checkbox_label_text_color_selected_dark="#ffffff",
     )
     css = """
     .gradio-container {
@@ -783,14 +811,23 @@ def main() -> None:
     }
     """
 
+    _default_question = DEMO_QUESTION_EXAMPLES[0]
+
     with gr.Blocks(title=title, theme=theme, css=css) as demo:
         gr.Markdown(hero)
         gr.HTML(_database_preview_html())
+        example_radio = gr.Radio(
+            label="Example question",
+            choices=list(DEMO_QUESTION_EXAMPLES),
+            value=_default_question,
+        )
         inp = gr.Textbox(
             label="Ask the database",
+            value=_default_question,
             placeholder="e.g. List all department names.",
             lines=4,
         )
+        example_radio.change(fn=lambda q: q, inputs=example_radio, outputs=inp)
         btn = gr.Button("Generate and compare SQL", variant="primary")
         with gr.Row(equal_height=False):
             with gr.Column(scale=1):
